@@ -1,0 +1,25 @@
+classDiagram
+    class Degraded_JAZs {
+        JAZ1 (Strong)
+        JAZ2 (Strong)
+        JAZ3 (Strong)
+        JAZ9 (Strong)
+        JAZ10 (Variable*)
+    }
+    class Weakly_Degraded {
+        JAZ4
+        JAZ5
+        JAZ6
+        JAZ7
+        JAZ8
+    }
+    class Distinctive_Motifs {
+        TIFY domain
+        Jas motif
+        EAR motif
+        LPIARR sequence
+    }
+    
+    Degraded_JAZs --> Distinctive_Motifs : Contains
+    note for Degraded_JAZs "* JAZ10 has splice variants\nwith varying degradation"
+    note for Distinctive_Motifs "LPIARR is crucial for\nCOI1 interaction"

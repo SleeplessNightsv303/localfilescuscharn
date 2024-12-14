@@ -1,0 +1,350 @@
+#v2 notebook
+
+
+#pipeline #1
+#cell 1 - set up virtual environment -> import structures -> import everything -> everything should be set up and ready to run
+import pyrosetta
+from pyrosetta import *
+from pyrosetta.rosetta.protocols.docking import *
+from pyrosetta.rosetta.core.scoring import *
+from pyrosetta.rosetta.protocols.moves import *
+from pyrosetta.rosetta.core.pack.task import TaskFactory
+from pyrosetta.rosetta.core.pack.task.operation import RestrictToRepackingRLT
+from pyrosetta.rosetta.protocols.minimization_packing import PackRotamersMover
+import numpy as np
+from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional
+import logging
+from itertools import product
+from Bio import AlignIO
+import pymol
+from pymol import cmd
+import matplotlib.pyplot as plt
+import pandas as pd
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class JAZProtein:
+    """Class to store JAZ protein information"""
+    name: str
+    sequence: str
+    pdb_path: str
+    jas_start: int
+    jas_end: int
+
+class MYC2JAZAnalyzer:
+    def __init__(self, myc2_pdb_path: str, reference_complex_path: str, alignment_file: str):
+        """Initialize analyzer with all required components"""
+        pyrosetta.init(extra_options="-ex1 -ex2 -use_input_sc -docking:dock_pert 3 8")
+        #pymol.finish_launching()
+        pymol.launch()
+        
+        # Load structures
+        #self.myc2_original = pose_from_pdb(myc2_pdb_path)
+        #self.reference_complex = pose_from_pdb(reference_complex_path)
+        
+        # Define mutation parameters
+        #self.charged_residues = [131, 133, 135, 136, 137, 140, 141]
+        #self.replacement_aas = ['ALA', 'VAL', 'ILE', 'LEU']
+        
+        # Setup scoring and docking
+        #self.scorefxn = create_score_function(reference_complex_path)
+        #self.setup_docking_protocol()
+        
+        # Load sequence alignment and calculate conservation
+        #self.alignment = AlignIO.read(alignment_file, "fasta")
+        #self.conservation_scores = self._calculate_conservation_scores()
+        
+        # Generate all possible mutations
+        #self.all_mutations = self._generate_all_combinations()
+        
+        # Create results directory structure
+        #self.results_dir = Path("mutation_results")
+        #self.results_dir.mkdir(exist_ok=True)
+
+    def _generate_all_combinations(self) -> List[List[Tuple[int, str]]]:
+        """Generate all 16,384 possible mutation combinations"""
+        combinations = list(product(self.replacement_aas, repeat=len(self.charged_residues)))
+        return [list(zip(self.charged_residues, combo)) for combo in combinations]
+
+    def create_mutations(self, pose: Pose, mutations: List[Tuple[int, str]]) -> Tuple[Pose, bool]:
+        """Create and validate multiple mutations"""
+        mutant = pose.clone()
+        
+        for pos, new_aa in mutations:
+            mutate = MutateResidue(pos, new_aa)
+            mutate.apply(mutant)
+        
+        # Setup relaxation
+        movemap = MoveMap()
+        movemap.set_bb(False)
+        movemap.set_chi(True)
+        
+        for pos, _ in mutations:
+            for i in range(max(1, pos - 5), min(mutant.total_residue(), pos + 5)):
+                movemap.set_bb(i, True)
+        
+        minmover = MinMover(movemap, self.scorefxn, 'lbfgs_armijo_nonmonotone', 0.001, True)
+        minmover.apply(mutant)
+        
+        return mutant, self.validate_structure(mutant, mutations)
+
+    def validate_structure(self, pose: Pose, mutations: List[Tuple[int, str]]) -> bool:
+        """Comprehensive structure validation"""
+        # Energy score check
+        score = self.scorefxn(pose)
+        if score > 0:
+            return False
+        
+        # Helix integrity check
+        dssp = pyrosetta.rosetta.core.scoring.dssp.Dssp(pose)
+        dssp.apply(pose)
+        structure = dssp.get_dssp_secstruct()
+        helix_region = structure[129:146]
+        if helix_region.count('H') < len(helix_region) * 0.85:  # Strict threshold
+            return False
+        
+        # Local geometry check for all mutations
+        for pos, _ in mutations:
+            mut_xyz = pose.residue(pos).xyz("CA")
+            for i in range(1, pose.total_residue() + 1):
+                if i not in [m[0] for m in mutations] and pose.residue(i).xyz("CA").distance(mut_xyz) < 2.0:
+                    return False
+        
+        return True
+
+    def analyze_structure(self, pose: Pose, mutations: List[Tuple[int, str]]) -> Dict:
+        """Category 1: Structural Analysis"""
+        # Generate Ramachandran plots
+        jid_plot = self.generate_ramachandran_plot(pose, (129, 146), "JID Region")
+        full_plot = self.generate_ramachandran_plot(pose, (1, pose.total_residue()), "Full Protein")
+        
+        backbone_rmsd = self.calculate_backbone_rmsd(self.myc2_original, pose, 129, 146)
+        
+        return {
+            'rama_plots': {'jid': jid_plot, 'full': full_plot},
+            'folding_energy': self.scorefxn(pose),
+            'helix_integrity': self.calculate_helix_integrity(pose),
+            'local_strain': self.calculate_local_strain(pose, mutations),
+            'backbone_rmsd': backbone_rmsd
+        }
+
+    def analyze_interface(self, complex_pose: Pose, jaz_protein: JAZProtein) -> Dict:
+        """Category 2: Interface Analysis"""
+        # Save complex for PyMOL analysis
+        complex_pose.dump_pdb("ACTUALfinalreferencecharanmid.cif.pdb")
+        
+        # Calculate interface metrics using PyMOL
+        cmd.load("ACTUALfinalreferencecharanmid.cif.pdb")
+        cmd.select("jas_region", f"resi {jaz_protein.jas_start}-{jaz_protein.jas_end}")
+        cmd.select("jid_region", "resi 129-146")
+        contact_area = cmd.get_area("jas_region and jid_region")
+        cmd.delete("all")
+        
+        return {
+            'binding_energy': self.calculate_binding_energy(complex_pose),
+            'interface_disruption': self.analyze_interface_disruption(complex_pose),
+            'interface_rmsd': self.calculate_interface_rmsd(complex_pose),
+            'contact_surface_area': contact_area
+        }
+
+    def analyze_viability(self, pose: Pose, mutations: List[Tuple[int, str]]) -> Dict:
+        """Category 3: Viability Analysis"""
+        return {
+            'wild_type_similarity': self.calculate_wild_type_similarity(pose),
+            'function_retention': self.validate_function_retention(pose),
+            'cas13_feasibility': self.assess_cas13_targeting(mutations),
+            'conservation_score': self.calculate_conservation_risk(mutations)
+        }
+
+    # Helper methods for specific calculations
+    def calculate_backbone_rmsd(self, pose1: Pose, pose2: Pose, start: int, end: int) -> float:
+        rmsd = 0.0
+        n_atoms = 0
+        backbone_atoms = ['N', 'CA', 'C', 'O']
+        
+        for i in range(start, end + 1):
+            for atom in backbone_atoms:
+                xyz1 = pose1.residue(i).xyz(atom)
+                xyz2 = pose2.residue(i).xyz(atom)
+                rmsd += xyz1.distance_squared(xyz2)
+                n_atoms += 1
+        
+        return np.sqrt(rmsd / n_atoms)
+
+    def calculate_binding_energy(self, complex_pose: Pose) -> float:
+        return self.scorefxn(complex_pose)
+
+    def generate_ramachandran_plot(self, pose: Pose, region: Tuple[int, int], title: str) -> np.ndarray:
+        phi_angles = []
+        psi_angles = []
+        
+        for res in range(region[0], region[1] + 1):
+            phi_angles.append(pose.phi(res))
+            psi_angles.append(pose.psi(res))
+            
+        plt.figure(figsize=(8, 6))
+        plt.scatter(phi_angles, psi_angles, c='blue', alpha=0.6)
+        plt.xlabel("Phi (φ)")
+        plt.ylabel("Psi (ψ)")
+        plt.title(f"Ramachandran Plot - {title}")
+        plt.grid(True, alpha=0.3)
+        
+        # Convert plot to numpy array for in-memory storage
+        fig = plt.gcf()
+        plt.close()
+        return fig
+
+    def format_result_name(self, mutation_info: Dict, metric_name: str) -> str:
+        """Generate standardized result name"""
+        mutations_str = "_".join([f"{pos}_{old}to{new}" 
+                                for pos, (old, new) in mutation_info.items()])
+        return f"MUT_{mutations_str}_{metric_name}"
+
+
+
+#cell 2 - executing cell 1 code - I-TASSER jaz's
+
+# Initialize analyzer with required files
+analyzer = MYC2JAZAnalyzer(
+    myc2_pdb_path="/Users/alvinfu/MYC2PA-main/MYC2final_AF-Q39204-F1-model_v4.pdb",
+    reference_complex_path="/Users/alvinfu/MYC2PA-main/ACTUALfinalreferencecharanmid.cif.pdb",
+    alignment_file="path/to/alignment.fasta"
+)
+
+# Define JAZ proteins
+jaz_proteins = [
+    JAZProtein(name="JAZ1", sequence="...", pdb_path="JAZ1-I-TASSER-final.pdb", jas_start=202, jas_end=227),
+    JAZProtein(name="JAZ2", sequence="...", pdb_path="JAZ2-I-TASSER-final.pdb", jas_start=204, jas_end=229),
+    JAZProtein(name="JAZ3", sequence="...", pdb_path="JAZ3-I-TASSER-final.pdb", jas_start=302, jas_end=326),
+    JAZProtein(name="JAZ9", sequence="...", pdb_path="JAZ9-I-TASSER-final.pdb", jas_start=220, jas_end=244),
+    JAZProtein(name="JAZ10", sequence="...", pdb_path="JAZ10-I-TASSER-final.pdb", jas_start=168, jas_end=193),
+    JAZProtein(name="JAZ12", sequence="...", pdb_path="JAZ12-I-TASSER-final.pdb", jas_start=139, jas_end=163),
+]
+
+#TIFY10A (JAZ1), TIFY10B (JAZ2), TIFY6B (JAZ3), TIFY7 (JAZ9), TIFY9, (JAZ10), TIFY3B (JAZ12)
+
+# Storage for results
+results = {}
+
+# Run analysis for all combinations
+for i, mutations in enumerate(analyzer.all_mutations):
+    if i % 100 == 0:
+        logger.info(f"Processing mutation combination {i}/{len(analyzer.all_mutations)}")
+    
+    # Create mutation
+    mutant_pose, is_valid = analyzer.create_mutations(analyzer.myc2_original, mutations)
+    if not is_valid:
+        continue
+    
+    # Generate mutation info for naming
+    mutation_info = {pos: (analyzer.myc2_original.residue(pos).name3(), new_aa) 
+                    for pos, new_aa in mutations}
+    
+    # Analyze structure (Category 1)
+    struct_results = analyzer.analyze_structure(mutant_pose, mutations)
+    for metric, value in struct_results.items():
+        if metric != 'rama_plots':  # Handle plots separately
+            results[analyzer.format_result_name(mutation_info, f"struct_{metric}")] = value
+    
+    # Store Ramachandran plots separately
+    results[analyzer.format_result_name(mutation_info, "rama_jid")] = struct_results['rama_plots']['jid']
+    results[analyzer.format_result_name(mutation_info, "rama_full")] = struct_results['rama_plots']['full']
+    
+    # Test against each JAZ protein
+    for jaz in jaz_proteins:
+        # Analyze interface (Category 2)
+        interface_results = analyzer.analyze_interface(mutant_pose, jaz)
+        for metric, value in interface_results.items():
+            results[analyzer.format_result_name(mutation_info, f"interface_{metric}_{jaz.name}")] = value
+    
+    # Analyze viability (Category 3)
+    viability_results = analyzer.analyze_viability(mutant_pose, mutations)
+    for metric, value in viability_results.items():
+        results[analyzer.format_result_name(mutation_info, f"viability_{metric}")] = value
+
+logger.info("Analysis complete. Results stored in memory.")
+
+
+
+
+#cell 2 - executing cell 1 code - AF2 jaz's
+
+# Initialize analyzer with required files
+analyzer = MYC2JAZAnalyzer(
+    myc2_pdb_path="/Users/alvinfu/MYC2PA-main/MYC2final_AF-Q39204-F1-model_v4.pdb",
+    reference_complex_path="/Users/alvinfu/MYC2PA-main/ACTUALfinalreferencecharanmid.cif.pdb",
+    alignment_file="/Users/alvinfu/MYC2PA-main/AThali_MYC_conservation_analysis_FASTAfile.fasta"
+)
+
+# Define JAZ proteins
+jaz_proteins = [
+    JAZProtein(name="JAZ1", sequence="...", pdb_path="JAZ1-AF2-final.pdb", jas_start=202, jas_end=227),
+    JAZProtein(name="JAZ2", sequence="...", pdb_path="JAZ2-AF2-final.pdb", jas_start=204, jas_end=229),
+    JAZProtein(name="JAZ3", sequence="...", pdb_path="JAZ3-AF2-final.pdb", jas_start=302, jas_end=326),
+    JAZProtein(name="JAZ9", sequence="...", pdb_path="JAZ9-AF2-final.pdb", jas_start=220, jas_end=244),
+    JAZProtein(name="JAZ10", sequence="...", pdb_path="JAZ10-AF2-final.pdb", jas_start=168, jas_end=193),
+    JAZProtein(name="JAZ12", sequence="...", pdb_path="JAZ12-AF2-final.pdb", jas_start=139, jas_end=163),
+]
+
+#TIFY10A (JAZ1), TIFY10B (JAZ2), TIFY6B (JAZ3), TIFY7 (JAZ9), TIFY9, (JAZ10), TIFY3B (JAZ12)
+
+# Storage for results
+results = {}
+
+# Run analysis for all combinations
+for i, mutations in enumerate(analyzer.all_mutations):
+    if i % 100 == 0:
+        logger.info(f"Processing mutation combination {i}/{len(analyzer.all_mutations)}")
+    
+    # Create mutation
+    mutant_pose, is_valid = analyzer.create_mutations(analyzer.myc2_original, mutations)
+    if not is_valid:
+        continue
+    
+    # Generate mutation info for naming
+    mutation_info = {pos: (analyzer.myc2_original.residue(pos).name3(), new_aa) 
+                    for pos, new_aa in mutations}
+    
+    # Analyze structure (Category 1)
+    struct_results = analyzer.analyze_structure(mutant_pose, mutations)
+    for metric, value in struct_results.items():
+        if metric != 'rama_plots':  # Handle plots separately
+            results[analyzer.format_result_name(mutation_info, f"struct_{metric}")] = value
+    
+    # Store Ramachandran plots separately
+    results[analyzer.format_result_name(mutation_info, "rama_jid")] = struct_results['rama_plots']['jid']
+    results[analyzer.format_result_name(mutation_info, "rama_full")] = struct_results['rama_plots']['full']
+    
+    # Test against each JAZ protein
+    for jaz in jaz_proteins:
+        # Analyze interface (Category 2)
+        interface_results = analyzer.analyze_interface(mutant_pose, jaz)
+        for metric, value in interface_results.items():
+            results[analyzer.format_result_name(mutation_info, f"interface_{metric}_{jaz.name}")] = value
+    
+    # Analyze viability (Category 3)
+    viability_results = analyzer.analyze_viability(mutant_pose, mutations)
+    for metric, value in viability_results.items():
+        results[analyzer.format_result_name(mutation_info, f"viability_{metric}")] = value
+
+logger.info("Analysis complete. Results stored in memory.")
+
+
+
+
+#cell 2 - executing cell 1 code - AF2 jaz's
+
+# Initialize analyzer with required files
+analyzer = MYC2JAZAnalyzer(
+    myc2_pdb_path="/Users/alvinfu/MYC2PA-main/MYC2final_AF-Q39204-F1-model_v4.pdb",
+    reference_complex_path="/Users/alvinfu/MYC2PA-main/ACTUALfinalreferencecharanmid.cif.pdb",
+    alignment_file="/Users/alvinfu/MYC2PA-main/AThali_MYC_conservation_analysis_FASTAfile.fasta"
+)
+
+
+
